@@ -1,0 +1,132 @@
+name: mern-todo
+
+# ---------------------------------------------------------------------------
+# One shared custom network for all backend containers. Compose actually
+# creates a default network for you automatically even without this block,
+# but declaring it explicitly makes the concept visible and lets us name it.
+# Containers on the same Docker network can reach each other BY SERVICE NAME
+# (Docker's built-in DNS) - e.g. from inside api-gateway, "http://auth-service:4001"
+# resolves correctly. This replaces "localhost:4001" from the old PM2 setup.
+# ---------------------------------------------------------------------------
+networks:
+  todo-net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      # These three only matter the FIRST time this container starts with an
+      # EMPTY volume - that's when Postgres "bootstraps" itself and creates
+      # this user/database. See README: "Postgres container authentication"
+      # for exactly what happens and who ends up as the admin user.
+      POSTGRES_USER: ${POSTGRES_USER:-todo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-todo}
+      POSTGRES_DB: ${POSTGRES_DB:-tododb}
+    volumes:
+      # NAMED VOLUME: this is what makes the data survive `docker compose
+      # down`, container recreation, and image updates. Without it, every
+      # restart would start from a totally empty database.
+      - pgdata:/var/lib/postgresql/data
+      # These run ONCE, only when the volume above is empty (i.e. truly
+      # first boot) - the official postgres image auto-executes any .sql
+      # file it finds in /docker-entrypoint-initdb.d, in filename order.
+      - ./services/auth-service/sql/schema.sql:/docker-entrypoint-initdb.d/01-auth.sql:ro
+      - ./services/todo-service/sql/schema.sql:/docker-entrypoint-initdb.d/02-todo.sql:ro
+    networks:
+      - todo-net
+    restart: unless-stopped
+    # Not published to the host on purpose - nothing outside Docker (and no
+    # other machine) needs to reach Postgres directly. Only auth-service and
+    # todo-service, over todo-net, do. Uncomment below only if you want to
+    # connect from your own machine with a GUI/psql for debugging:
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      # "Started" isn't the same as "ready to accept connections" - Postgres
+      # takes a moment to initialize. This healthcheck is what lets
+      # auth-service/todo-service below actually WAIT for it instead of
+      # racing it and crashing on their very first connection attempt.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-todo} -d ${POSTGRES_DB:-tododb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  auth-service:
+    build:
+      context: ./services/auth-service
+    container_name: auth-service
+    env_file:
+      - ./services/auth-service/.env
+    networks:
+      - todo-net
+    # NOT published to the host on purpose (mirrors the EC2 security-group
+    # rule in the manual README: 4001 must never be reachable from outside).
+    # It's still reachable by other containers on todo-net, just not by
+    # the host machine or the internet.
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy   # waits for the healthcheck above, not just "container started"
+
+  todo-service:
+    build:
+      context: ./services/todo-service
+    container_name: todo-service
+    env_file:
+      - ./services/todo-service/.env
+    networks:
+      - todo-net
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+    container_name: api-gateway
+    env_file:
+      - ./services/api-gateway/.env
+    environment:
+      # Overrides the .env defaults so the gateway uses Docker's internal
+      # DNS names instead of "localhost" (each service now runs in its
+      # own container, so localhost no longer means "the other service").
+      AUTH_SERVICE_URL: http://auth-service:4001
+      TODO_SERVICE_URL: http://todo-service:4002
+    ports:
+      - "4000:4000"     # published: this is the one public backend port
+    networks:
+      - todo-net
+    restart: unless-stopped
+    depends_on:
+      - auth-service
+      - todo-service
+
+  client:
+    build:
+      context: ./client
+      args:
+        # Baked into the JS bundle at build time - point this at wherever
+        # api-gateway is publicly reachable (EC2 public IP/domain + :4000).
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:4000}
+    container_name: client
+    ports:
+      - "3000:80"       # host:3000 -> container's nginx on port 80
+    networks:
+      - todo-net
+    restart: unless-stopped
+    depends_on:
+      - api-gateway
+
+# ---------------------------------------------------------------------------
+# Named volume declaration - required any time you reference a name (like
+# pgdata above) under a service's `volumes:`. This is what Docker actually
+# creates and manages on the host's disk. See README "Docker volumes and
+# networks" for how this differs from a bind mount.
+# ---------------------------------------------------------------------------
+volumes:
+  pgdata:

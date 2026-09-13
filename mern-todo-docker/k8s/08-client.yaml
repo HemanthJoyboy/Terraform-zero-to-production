@@ -1,0 +1,57 @@
+# Note: this image must be built with `--build-arg VITE_API_BASE_URL=""`
+# (empty string, deliberately) - see README AKS deployment steps for why.
+# With an empty base URL, the client's compiled JS calls relative paths
+# like `/api/auth/login` instead of an absolute host:port, so it always
+# talks to whatever host it was loaded from - which lines up exactly with
+# the Ingress routing both `/` and `/api` to the same external address.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: mern-todo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: client
+  template:
+    metadata:
+      labels:
+        app: client
+    spec:
+      containers:
+        - name: client
+          image: <ECR_REGISTRY>/mern-todo/client:1.0
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "32Mi"
+            limits:
+              cpu: "150m"
+              memory: "96Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: client
+  namespace: mern-todo
+spec:
+  selector:
+    app: client
+  ports:
+    - port: 80
+      targetPort: 80

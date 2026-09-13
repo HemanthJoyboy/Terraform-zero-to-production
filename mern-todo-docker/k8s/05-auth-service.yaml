@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: mern-todo
+spec:
+  replicas: 2   # 2, not 1: demonstrates load-balancing + zero-downtime rolling updates - see README "Deployment" section
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+        - name: auth-service
+          # REPLACE with your ACR image, e.g. myregistry.azurecr.io/auth-service:1.0
+          image: <ECR_REGISTRY>/mern-todo/auth-service:1.0
+          ports:
+            - containerPort: 4001
+          envFrom:
+            - configMapRef:
+                name: mern-config
+            - secretRef:
+                name: mern-secrets
+          env:
+            - name: PORT
+              value: "4001"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4001
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+---
+# ClusterIP (the default type) - reachable only from INSIDE the cluster,
+# same principle as never publishing 4001 to the Docker host. No external
+# path in exists for this Service at all, by design.
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: mern-todo
+spec:
+  selector:
+    app: auth-service   # any pod with this label gets traffic - this is how Services find pods, see README "Networking"
+  ports:
+    - port: 4001
+      targetPort: 4001

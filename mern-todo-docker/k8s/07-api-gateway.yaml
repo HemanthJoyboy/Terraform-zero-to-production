@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: mern-todo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      containers:
+        - name: api-gateway
+          image: <ECR_REGISTRY>/mern-todo/api-gateway:1.0
+          ports:
+            - containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: mern-config   # AUTH_SERVICE_URL, TODO_SERVICE_URL - Service names, not pod IPs
+          env:
+            - name: PORT
+              value: "4000"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+---
+# Still ClusterIP - this Service is NOT what makes the gateway public.
+# The Ingress (09-ingress.yaml) is what exposes it, by routing /api/* here.
+# This mirrors "don't publish a raw port, front it with a reverse proxy" -
+# the same idea as the host-Nginx setup from the Docker README, just done
+# the Kubernetes-native way.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: mern-todo
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - port: 4000
+      targetPort: 4000

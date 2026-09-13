@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todo-service
+  namespace: mern-todo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: todo-service
+  template:
+    metadata:
+      labels:
+        app: todo-service
+    spec:
+      containers:
+        - name: todo-service
+          image: <ECR_REGISTRY>/mern-todo/todo-service:1.0
+          ports:
+            - containerPort: 4002
+          envFrom:
+            - configMapRef:
+                name: mern-config
+            - secretRef:
+                name: mern-secrets
+          env:
+            - name: PORT
+              value: "4002"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4002
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4002
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo-service
+  namespace: mern-todo
+spec:
+  selector:
+    app: todo-service
+  ports:
+    - port: 4002
+      targetPort: 4002

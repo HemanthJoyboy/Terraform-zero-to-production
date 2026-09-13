@@ -1,0 +1,21 @@
+# Non-secret configuration, shared across pods. Equivalent to the plain
+# (non-password) lines that used to sit in each service's .env file, plus
+# the compose-level service hostnames.
+#
+# Why these values, specifically:
+# - AUTH_SERVICE_URL / TODO_SERVICE_URL: point at Kubernetes SERVICE names,
+#   not pod names or pod IPs - "auth-service" resolves via K8s's internal
+#   DNS to whichever pods are currently backing that Service. Same idea as
+#   Docker's "container name = hostname" trick, one layer up.
+# - POSTGRES_DB / POSTGRES_USER: not secret by themselves (a username and a
+#   db name aren't sensitive) - only POSTGRES_PASSWORD goes in the Secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mern-config
+  namespace: mern-todo
+data:
+  AUTH_SERVICE_URL: "http://auth-service:4001"
+  TODO_SERVICE_URL: "http://todo-service:4002"
+  POSTGRES_DB: "tododb"
+  POSTGRES_USER: "todo"

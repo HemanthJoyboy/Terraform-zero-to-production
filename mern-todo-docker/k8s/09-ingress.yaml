@@ -1,0 +1,46 @@
+# Requires the AWS Load Balancer Controller add-on to already be installed
+# on the cluster (see README AKS->EKS deployment steps) - that controller is
+# what actually watches for Ingress objects and provisions a real AWS
+# Application Load Balancer (ALB) to match. Without it installed, this
+# object just sits there doing nothing.
+#
+# Single entry point, path-based routing to two different Services:
+#   /api/*  -> api-gateway:4000  (must come first - more specific path wins)
+#   /*      -> client:80
+#
+# This is why the client image is built with VITE_API_BASE_URL="" (see
+# 08-client.yaml) - the browser calls relative /api/... paths, which land
+# on this exact ALB/host, and get routed to api-gateway automatically.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mern-todo-ingress
+  namespace: mern-todo
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # Health check the controller uses against the TARGET pods directly
+    # (via their Service's targetPort) - separate from the Kubernetes
+    # readiness probes in each Deployment, though it's checking the same
+    # /health endpoints. See README "Probes vs Ingress health checks".
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 4000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: client
+                port:
+                  number: 80

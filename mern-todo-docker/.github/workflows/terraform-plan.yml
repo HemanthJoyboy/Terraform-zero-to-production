@@ -1,0 +1,89 @@
+# INFRA pipeline, part 1 of 2 (see terraform-apply.yml for the other half).
+# Deliberately a SEPARATE workflow file from app-deploy.yml - see
+# README-terraform.md Section 5 for why infra and app changes are never on
+# the same pipeline in a real setup.
+#
+# Triggers only on changes under infra/ - an app code change to
+# services/auth-service never runs this, and vice versa.
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+
+jobs:
+  # One job per environment/component that actually changed, so a PR that
+  # only touches infra/live/dev/eks doesn't also plan test and prod for no
+  # reason. In a real repo this detection is usually done with
+  # dorny/paths-filter or a small script - simplified here to a fixed matrix
+  # for clarity; adjust `include` to match whichever dirs your PR touches.
+  plan:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - env: dev
+            component: network
+          - env: dev
+            component: eks
+          - env: dev
+            component: k8s-addons
+          - env: test
+            component: network
+          - env: test
+            component: eks
+          - env: test
+            component: k8s-addons
+          - env: prod
+            component: network
+          - env: prod
+            component: eks
+          - env: prod
+            component: k8s-addons
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      # Assume a role SCOPED to this environment's AWS account - a dev-plan
+      # job physically cannot touch the prod account's credentials, even if
+      # someone tried to point it at the wrong tfvars.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ matrix.env == 'prod' && secrets.AWS_ROLE_PROD || matrix.env == 'test' && secrets.AWS_ROLE_TEST || secrets.AWS_ROLE_DEV }}
+          aws-region: us-east-1
+
+      - name: Terraform fmt check
+        working-directory: infra/live/${{ matrix.env }}/${{ matrix.component }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        working-directory: infra/live/${{ matrix.env }}/${{ matrix.component }}
+        run: terraform init
+
+      - name: Terraform validate
+        working-directory: infra/live/${{ matrix.env }}/${{ matrix.component }}
+        run: terraform validate
+
+      - name: Terraform plan
+        id: plan
+        working-directory: infra/live/${{ matrix.env }}/${{ matrix.component }}
+        run: terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+
+      # Posts the exact plan output as a PR comment - reviewers see "3 to
+      # add, 0 to change, 0 to destroy" before they approve, not after.
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/live/${{ matrix.env }}/${{ matrix.component }}/plan_output.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `#### Terraform Plan: \`${{ matrix.env }}/${{ matrix.component }}\`\n\`\`\`\n${plan.slice(-60000)}\n\`\`\``
+            });

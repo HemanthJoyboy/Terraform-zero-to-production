@@ -1,0 +1,86 @@
+# INFRA pipeline, part 2 of 2. Runs on merge to main, not on every push -
+# by this point the PR's plan has already been reviewed and approved.
+name: Terraform Apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+
+jobs:
+  apply-dev:
+    runs-on: ubuntu-latest
+    # No `environment:` block here - dev applies immediately on merge,
+    # no extra human gate. This is deliberate: dev is meant to be cheap to
+    # break and fast to iterate on.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_DEV }}
+          aws-region: us-east-1
+      - name: Apply network
+        working-directory: infra/live/dev/network
+        run: terraform init && terraform apply -auto-approve
+      - name: Apply eks
+        working-directory: infra/live/dev/eks
+        run: terraform init && terraform apply -auto-approve
+      - name: Apply k8s-addons
+        working-directory: infra/live/dev/k8s-addons
+        run: terraform init && terraform apply -auto-approve
+
+  apply-test:
+    needs: apply-dev   # promote through dev before test, never skip straight to test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TEST }}
+          aws-region: us-east-1
+      - name: Apply network
+        working-directory: infra/live/test/network
+        run: terraform init && terraform apply -auto-approve
+      - name: Apply eks
+        working-directory: infra/live/test/eks
+        run: terraform init && terraform apply -auto-approve
+      - name: Apply k8s-addons
+        working-directory: infra/live/test/k8s-addons
+        run: terraform init && terraform apply -auto-approve
+
+  apply-prod:
+    needs: apply-test
+    runs-on: ubuntu-latest
+    # THIS is the actual gate: a GitHub "Environment" named "prod-infra" can
+    # be configured (in repo Settings -> Environments) with required
+    # reviewers - the job below LITERALLY PAUSES and waits for a specific
+    # person (e.g. the platform team lead) to click Approve in the GitHub
+    # UI before any of these steps run, no matter how the workflow was
+    # triggered. This is the real mechanism behind "prod needs manual
+    # approval," not just a convention.
+    environment: prod-infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_PROD }}
+          aws-region: us-east-1
+      - name: Apply network
+        working-directory: infra/live/prod/network
+        run: terraform init && terraform apply -auto-approve
+      - name: Apply eks
+        working-directory: infra/live/prod/eks
+        run: terraform init && terraform apply -auto-approve
+      - name: Apply k8s-addons
+        working-directory: infra/live/prod/k8s-addons
+        run: terraform init && terraform apply -auto-approve

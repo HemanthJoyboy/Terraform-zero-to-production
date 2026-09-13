@@ -1,0 +1,5 @@
+{
+  "_comment": "PLACEHOLDER. Download the real, current version before applying: curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json  -  then replace this file with it. It's a long (~500 line) AWS-maintained policy granting exactly the EC2/ELB permissions the controller needs to create and manage ALBs on your behalf; it's fetched from upstream rather than hand-written because AWS updates it as the controller gains features.",
+  "Version": "2012-10-17",
+  "Statement": []
+}

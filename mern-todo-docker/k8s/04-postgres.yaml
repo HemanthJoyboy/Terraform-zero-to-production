@@ -1,0 +1,105 @@
+# StatefulSet, not Deployment, for the same reason real-world databases use
+# one: it gives the pod a STABLE identity (postgres-0) and its OWN
+# PersistentVolumeClaim that's tied to that identity and re-attaches to the
+# SAME pod on restart/reschedule - a plain Deployment's pods are meant to be
+# interchangeable, which is wrong for something holding onto disk state.
+# We still only run replicas: 1 here (Postgres itself isn't clustered in
+# this app) - the StatefulSet is about volume/identity guarantees, not
+# about running multiple replicas.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: mern-todo
+spec:
+  serviceName: postgres        # must match the headless Service below
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: mern-config   # POSTGRES_DB, POSTGRES_USER
+            - secretRef:
+                name: mern-secrets  # POSTGRES_PASSWORD
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          # READINESS PROBE: is this pod ready to actually serve traffic
+          # right now? Kubernetes only sends Service traffic to Ready pods,
+          # and only lets dependent pods proceed once this is green - this
+          # is the K8s equivalent of Compose's `condition: service_healthy`.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "todo", "-d", "tododb"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          # LIVENESS PROBE: is this pod still healthy, or should Kubernetes
+          # kill and restart it? Same command works for both here, but they
+          # answer different questions - see README "Probes" section.
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "todo", "-d", "tododb"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init-scripts
+  # volumeClaimTemplates - a StatefulSet-only feature: Kubernetes creates
+  # ONE PersistentVolumeClaim per replica automatically, named
+  # pgdata-postgres-0, pgdata-postgres-1, etc. and keeps re-attaching the
+  # same one to the same pod identity across restarts/reschedules.
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]   # one node can mount it read/write at a time - normal for a block-storage-backed disk
+        # storageClassName intentionally omitted: EKS's default StorageClass
+        # (gp2, backed by an EBS volume via the EBS CSI driver) is used
+        # automatically, PROVIDED the EBS CSI driver add-on is installed on
+        # the cluster (it's not always on by default - see README "Volumes"
+        # / AKS->EKS deployment steps for the exact eksctl command).
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Headless Service (clusterIP: None). This does NOT load-balance - its only
+# job is to give each StatefulSet pod its own stable DNS name
+# (postgres-0.postgres.mern-todo.svc.cluster.local). auth-service/todo-service
+# don't need that level of addressing (they just connect to "postgres" and
+# let Kubernetes pick the pod), but StatefulSets require a headless Service
+# to exist by convention/spec, even with a single replica.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: mern-todo
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

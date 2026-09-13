@@ -1,0 +1,53 @@
+# APP pipeline - completely separate from terraform-plan.yml/terraform-apply.yml.
+# Triggers on application code only; touching infra/ never runs this, and
+# touching services/services/* never runs the Terraform workflows. This
+# separation IS the answer to "do we need a different pipeline for infra" -
+# yes, and this file is the contrast that makes it concrete.
+name: App Build & Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "client/**"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [auth-service, todo-service, api-gateway, client]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Notice: a DIFFERENT, narrower role than the infra pipeline uses -
+          # this one can only push images to ECR and update Deployments,
+          # nothing close to "create a VPC" or "create an IAM role."
+          role-to-assume: ${{ secrets.AWS_ROLE_APP_DEPLOY }}
+          aws-region: us-east-1
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Build and push image
+        run: |
+          docker build -t ${{ steps.ecr-login.outputs.registry }}/mern-todo/${{ matrix.service }}:${{ github.sha }} \
+            $( [ "${{ matrix.service }}" = "client" ] && echo "--build-arg VITE_API_BASE_URL=" ) \
+            $( [ "${{ matrix.service }}" = "client" ] && echo "client" || echo "services/${{ matrix.service }}" )
+          docker push ${{ steps.ecr-login.outputs.registry }}/mern-todo/${{ matrix.service }}:${{ github.sha }}
+
+      - name: Deploy to dev cluster
+        run: |
+          aws eks update-kubeconfig --name mern-todo-dev --region us-east-1
+          kubectl set image deployment/${{ matrix.service }} \
+            ${{ matrix.service }}=${{ steps.ecr-login.outputs.registry }}/mern-todo/${{ matrix.service }}:${{ github.sha }} \
+            -n mern-todo
+          kubectl rollout status deployment/${{ matrix.service }} -n mern-todo
+
+  # Promotion to test/prod for the APP is typically a separate, manually-
+  # triggered workflow (workflow_dispatch) or a tag-based release, not an
+  # automatic follow-on from every merge - deliberately omitted here to
+  # keep this example focused on the infra-vs-app pipeline distinction.
